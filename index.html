@@ -1,0 +1,1187 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Aero Slam</title>
+    <link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@500;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: #000;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            width: 100vw;
+            overflow: hidden;
+            font-family: 'Fredoka', sans-serif;
+            touch-action: none;
+        }
+        #gameContainer {
+            position: relative;
+            width: 100%;
+            height: 100%;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            background: #000;
+        }
+        canvas {
+            max-width: 100%;
+            max-height: 100%;
+            object-fit: contain;
+            background: #000;
+        }
+        .ui-layer {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            text-align: center;
+        }
+        .hidden { display: none !important; }
+        
+        h1 {
+            font-size: 64px;
+            color: white;
+            text-shadow: 3px 3px 0 #d63031, 6px 6px 0 #2d3436;
+            margin: 0 0 20px 0;
+            transform: rotate(-2deg);
+        }
+        p.subtitle {
+            color: #fff;
+            font-size: 20px;
+            text-shadow: 2px 2px 0 #2d3436;
+            background: rgba(0,0,0,0.3);
+            padding: 10px 20px;
+            border-radius: 20px;
+        }
+        .blink { animation: blinker 1.5s linear infinite; }
+        @keyframes blinker { 50% { opacity: 0; } }
+
+
+        #scoreBoard {
+            position: absolute;
+            top: 20px;
+            left: 0;
+            width: 100%;
+            display: flex;
+            justify-content: space-around;
+            font-size: 40px;
+            font-weight: 700;
+            color: white;
+            text-shadow: 2px 2px 0 #2d3436;
+        }
+        .replay-text {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            color: #ff7675;
+            font-size: 30px;
+            font-weight: 700;
+            text-shadow: 2px 2px 0 #2d3436;
+        }
+        .skip-text {
+            position: absolute;
+            bottom: 20px;
+            right: 20px;
+            color: #dfe6e9;
+            font-size: 20px;
+            background: rgba(0,0,0,0.5);
+            padding: 5px 15px;
+            border-radius: 10px;
+        }
+    </style>
+</head>
+<body>
+
+
+<div id="gameContainer">
+    <canvas id="gameCanvas" width="900" height="600"></canvas>
+    
+    <!-- UI Overlays -->
+    <div id="menuUI" class="ui-layer">
+        <h1>AERO SLAM</h1>
+        <p class="subtitle blink" id="startText">Press W to Start</p>
+        <p style="color: #55efc4; font-size: 24px; font-weight: bold; margin: 10px 0; text-shadow: 2px 2px 0 #2d3436;" id="multiplayerText">Mode: 1 Player (Vs AI)</p>
+        <div style="margin-top: 10px; color: white; background: rgba(0,0,0,0.5); padding: 15px; border-radius: 10px; text-align: left; font-size: 16px;">
+            <strong>Controls:</strong><br>
+            • P1: W,A,S,D to Move/Jump | SPACE to Grapple<br>
+            • P2: Arrows to Move/Jump | SHIFT to Grapple<br>
+            • S / Down Arrow (In Air): Down Slam<br>
+            • CTRL: Toggle Multiplayer<br>
+            • X: Skip Replay
+        </div>
+    </div>
+
+
+    <div id="gameOverUI" class="ui-layer hidden">
+        <h1 id="winnerText">YOU WIN!</h1>
+        <p class="subtitle blink">Press W to Play Again</p>
+    </div>
+
+
+    <div id="playingUI" class="ui-layer hidden">
+        <div id="scoreBoard">
+            <span id="playerScore" style="color: #ff4757;">0</span>
+            <span style="font-size: 20px; margin-top:10px; color: #fff;">First to 5</span>
+            <span id="aiScore" style="color: #1e90ff;">0</span>
+        </div>
+        <div id="replayTag" class="replay-text hidden blink">● REPLAY</div>
+        <div id="skipTag" class="skip-text hidden">Press X to Skip</div>
+    </div>
+</div>
+
+
+<script>
+/**
+ * Aero Slam - Canvas Game
+ * Implements physics, replay system, and sketch-based mechanics.
+ */
+
+
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+
+
+// UI Elements
+const menuUI = document.getElementById('menuUI');
+const gameOverUI = document.getElementById('gameOverUI');
+const playingUI = document.getElementById('playingUI');
+const playerScoreEl = document.getElementById('playerScore');
+const aiScoreEl = document.getElementById('aiScore');
+const replayTag = document.getElementById('replayTag');
+const skipTag = document.getElementById('skipTag');
+const winnerText = document.getElementById('winnerText');
+
+
+// Game States
+const STATE = { MENU: 0, PLAYING: 1, SCORED: 2, REPLAY: 3, GAMEOVER: 4 };
+let currentState = STATE.MENU;
+
+
+// Physics Constants
+const GRAVITY = 0.35;
+const FRICTION = 0.95;
+const GROUND_Y = 550;
+const RAMP_R = 200;
+const LEFT_C = {x: 200, y: GROUND_Y - 200};
+const RIGHT_C = {x: 700, y: GROUND_Y - 200};
+
+
+// Game Mode
+let isMultiplayer = false;
+
+
+// Input Tracking
+const keys = { 
+    p1: { up: false, down: false, left: false, right: false, grapple: false },
+    p2: { up: false, down: false, left: false, right: false, grapple: false },
+    x: false 
+};
+let prevKeys = { p1: { up: false, grapple: false }, p2: { up: false, grapple: false } };
+
+
+document.addEventListener('keydown', (e) => {
+    // P1
+    if(e.code === 'KeyW') keys.p1.up = true;
+    if(e.code === 'KeyS') keys.p1.down = true;
+    if(e.code === 'KeyA') keys.p1.left = true;
+    if(e.code === 'KeyD') keys.p1.right = true;
+    if(e.code === 'Space') keys.p1.grapple = true;
+
+
+    // P2
+    if(e.code === 'ArrowUp') keys.p2.up = true;
+    if(e.code === 'ArrowDown') keys.p2.down = true;
+    if(e.code === 'ArrowLeft') keys.p2.left = true;
+    if(e.code === 'ArrowRight') keys.p2.right = true;
+    if(e.code === 'ShiftLeft' || e.code === 'ShiftRight') keys.p2.grapple = true;
+
+
+    if(e.code === 'KeyX') keys.x = true;
+    
+    // Toggle Multiplayer Mode
+    if(e.code === 'ControlLeft' || e.code === 'ControlRight') {
+        if (currentState === STATE.MENU) {
+            isMultiplayer = !isMultiplayer;
+            document.getElementById('multiplayerText').innerText = isMultiplayer ? "Mode: 2 Players" : "Mode: 1 Player (Vs AI)";
+        }
+    }
+    
+    handleStateTransitions(e.code);
+});
+
+
+document.addEventListener('keyup', (e) => {
+    if(e.code === 'KeyW') keys.p1.up = false;
+    if(e.code === 'KeyS') keys.p1.down = false;
+    if(e.code === 'KeyA') keys.p1.left = false;
+    if(e.code === 'KeyD') keys.p1.right = false;
+    if(e.code === 'Space') keys.p1.grapple = false;
+
+
+    if(e.code === 'ArrowUp') keys.p2.up = false;
+    if(e.code === 'ArrowDown') keys.p2.down = false;
+    if(e.code === 'ArrowLeft') keys.p2.left = false;
+    if(e.code === 'ArrowRight') keys.p2.right = false;
+    if(e.code === 'ShiftLeft' || e.code === 'ShiftRight') keys.p2.grapple = false;
+
+
+    if(e.code === 'KeyX') keys.x = false;
+});
+
+
+// Game Objects
+let scores = { player: 0, ai: 0 };
+let historyBuffer = [];
+const HISTORY_LENGTH = 180;
+let replayIndex = 0;
+let goalTimer = 0;
+
+
+// Precompute floor path for dynamic rendering
+const floorPath = [];
+for(let a = Math.PI; a >= Math.PI/2; a -= 0.05) floorPath.push({x: LEFT_C.x + Math.cos(a)*RAMP_R, y: LEFT_C.y + Math.sin(a)*RAMP_R});
+for(let x = LEFT_C.x; x <= RIGHT_C.x; x += 10) floorPath.push({x: x, y: GROUND_Y});
+for(let a = Math.PI/2; a >= 0; a -= 0.05) floorPath.push({x: RIGHT_C.x + Math.cos(a)*RAMP_R, y: RIGHT_C.y + Math.sin(a)*RAMP_R});
+
+
+function applyPhysics(entity, isBall) {
+    entity.vx *= isBall ? 0.99 : FRICTION;
+    entity.vy += GRAVITY * (isBall ? 0.7 : 1);
+    
+    // Limits
+    let speedMult = (!isBall && entity.isSupersonic) ? 1.4 : 1.0;
+    if (!isBall) {
+        entity.vx = Math.max(-15 * speedMult, Math.min(15 * speedMult, entity.vx));
+        entity.vy = Math.max(-25, Math.min(25, entity.vy));
+    }
+
+
+    entity.x += entity.vx;
+    entity.y += entity.vy;
+
+
+    let r = isBall ? entity.radius : entity.width / 2;
+    let cx = isBall ? entity.x : entity.x + r;
+    let cy = isBall ? entity.y : entity.y + r;
+    
+    let currentlyOnRamp = false;
+    if (!isBall) entity.onGround = false;
+
+
+    // Ground Floor
+    if (cx >= LEFT_C.x && cx <= RIGHT_C.x) {
+        if (cy + r > GROUND_Y) {
+            cy = GROUND_Y - r;
+            if (isBall) { entity.vy *= -0.75; entity.vx *= 0.95; }
+            else { entity.vy = 0; entity.onGround = true; }
+        } else if (!isBall && cy + r >= GROUND_Y - 2) {
+            entity.onGround = true;
+        }
+    }
+    // Left Ramp
+    if (cx < LEFT_C.x && cy > LEFT_C.y) {
+        let dx = cx - LEFT_C.x;
+        let dy = cy - LEFT_C.y;
+        let dist = Math.sqrt(dx*dx + dy*dy);
+        if (dist > RAMP_R - r) {
+            currentlyOnRamp = true;
+            let nx = dx / dist; let ny = dy / dist;
+            cx = LEFT_C.x + nx * (RAMP_R - r); cy = LEFT_C.y + ny * (RAMP_R - r);
+            let dot = entity.vx * nx + entity.vy * ny;
+            entity.vx -= 2 * dot * nx * (isBall ? 0.8 : 0.2);
+            entity.vy -= 2 * dot * ny * (isBall ? 0.8 : 0.2);
+            if (!isBall) entity.onGround = true;
+        } else if (!isBall && dist > RAMP_R - r - 2) {
+            entity.onGround = true;
+        }
+    }
+    // Right Ramp
+    if (cx > RIGHT_C.x && cy > RIGHT_C.y) {
+        let dx = cx - RIGHT_C.x;
+        let dy = cy - RIGHT_C.y;
+        let dist = Math.sqrt(dx*dx + dy*dy);
+        if (dist > RAMP_R - r) {
+            currentlyOnRamp = true;
+            let nx = dx / dist; let ny = dy / dist;
+            cx = RIGHT_C.x + nx * (RAMP_R - r); cy = RIGHT_C.y + ny * (RAMP_R - r);
+            let dot = entity.vx * nx + entity.vy * ny;
+            entity.vx -= 2 * dot * nx * (isBall ? 0.8 : 0.2);
+            entity.vy -= 2 * dot * ny * (isBall ? 0.8 : 0.2);
+            if (!isBall) entity.onGround = true;
+        } else if (!isBall && dist > RAMP_R - r - 2) {
+            entity.onGround = true;
+        }
+    }
+
+
+    // Walls & Ceiling
+    if (cx - r < 0) { cx = r; entity.vx *= (isBall ? -0.7 : -0.2); }
+    if (cx + r > canvas.width) { cx = canvas.width - r; entity.vx *= (isBall ? -0.7 : -0.2); }
+    if (cy - r < 0) { cy = r; entity.vy *= (isBall ? -0.7 : -0.2); }
+
+
+    if (!isBall) {
+        entity.x = cx - r; entity.y = cy - r;
+    } else {
+        entity.x = cx; entity.y = cy;
+    }
+}
+
+
+class Player {
+    constructor(x, color, isAI = false) {
+        this.width = 40;
+        this.height = 40;
+        this.x = x;
+        this.y = GROUND_Y - this.height;
+        this.vx = 0;
+        this.vy = 0;
+        this.color = color;
+        this.isAI = isAI;
+        this.playerIndex = isAI ? 2 : 1;
+        this.startX = x;
+        
+        this.onGround = false;
+        
+        // Grapple mechanics
+        this.hookState = 0; // 0: Idle, 1: Spin, 2: Shoot, 3: Pull
+        this.hookX = 0;
+        this.hookY = 0;
+        this.latchX = 0;
+        this.latchY = 0;
+        this.spinAngle = 0;
+        this.spinRadius = 0; 
+        this.hookCooldown = 0; // 6 seconds (360 frames)
+        
+        // Supersonic mechanics
+        this.railTime = 0;
+        this.isSupersonic = false;
+
+
+        // Directional Aiming
+        this.aimDir = { x: 0, y: 1 }; 
+
+
+        // VFX Tracking
+        this.innerRot = 0;
+        this.innerRotVel = 0;
+        this.afterImages = [];
+        this.windStripes = [];
+    }
+
+
+    reset() {
+        this.x = this.startX;
+        this.y = GROUND_Y - this.height;
+        this.vx = 0; this.vy = 0;
+        this.afterImages = [];
+        this.windStripes = [];
+        this.innerRotVel = 0;
+        this.hookState = 0;
+        this.hookCooldown = 0;
+        this.railTime = 0;
+        this.isSupersonic = false;
+        this.onGround = true;
+        this.aimDir = { x: 0, y: 1 };
+    }
+
+
+    spawnWindStripes() {
+        for(let i=0; i<3; i++) {
+            this.windStripes.push({
+                xOffset: (Math.random() - 0.5) * this.width,
+                yOffset: this.height + Math.random() * 10,
+                len: 15 + Math.random() * 20,
+                alpha: 1.0
+            });
+        }
+    }
+
+
+    updateVFX() {
+        let targetRotVel = this.vx * 0.05; 
+        this.innerRotVel += (targetRotVel - this.innerRotVel) * 0.15; 
+        this.innerRot += this.innerRotVel;
+
+
+        if (Math.abs(this.vx) > 4 || Math.abs(this.vy) > 4 || this.hookState === 3 || this.isSupersonic) {
+            let limit = this.isSupersonic ? 0.4 : 0.25; // Keep trails longer if supersonic
+            if (this.afterImages.length === 0 || this.afterImages[this.afterImages.length-1].alpha < limit) {
+                this.afterImages.push({
+                    x: this.x, y: this.y, rot: this.innerRot, alpha: this.isSupersonic ? 0.7 : 0.4
+                });
+            }
+        }
+
+
+        for (let i = this.afterImages.length - 1; i >= 0; i--) {
+            this.afterImages[i].alpha -= 0.035;
+            if (this.afterImages[i].alpha <= 0) {
+                this.afterImages.splice(i, 1);
+            }
+        }
+
+
+        for (let i = this.windStripes.length - 1; i >= 0; i--) {
+            this.windStripes[i].yOffset += 4;
+            this.windStripes[i].alpha -= 0.05;
+            if (this.windStripes[i].alpha <= 0) {
+                this.windStripes.splice(i, 1);
+            }
+        }
+    }
+
+
+    shootHook() {
+        let cx = this.x + this.width / 2;
+        let cy = this.y + this.height / 2;
+        
+        // Normalize aim direction
+        let dx = this.aimDir.x;
+        let dy = this.aimDir.y;
+        let mag = Math.hypot(dx, dy);
+        if (mag === 0) { dx = 0; dy = 1; }
+        else { dx /= mag; dy /= mag; }
+
+
+        let testX = cx;
+        let testY = cy;
+        let hit = false;
+        
+        // Raycast outward in the aimed direction to find the attachment point
+        while (!hit && testX >= 0 && testX <= canvas.width && testY >= 0) {
+            testX += dx * 10;
+            testY += dy * 10;
+
+
+            // Screen boundaries
+            if (testX <= 0 || testX >= canvas.width || testY <= 0) hit = true;
+            
+            // Ground floor
+            if (testY >= GROUND_Y && testX >= LEFT_C.x && testX <= RIGHT_C.x) hit = true;
+
+
+            // Left Ramp
+            if (testX < LEFT_C.x && testY > LEFT_C.y) {
+                if (Math.hypot(testX - LEFT_C.x, testY - LEFT_C.y) >= RAMP_R) hit = true;
+            }
+            
+            // Right Ramp
+            if (testX > RIGHT_C.x && testY > RIGHT_C.y) {
+                if (Math.hypot(testX - RIGHT_C.x, testY - RIGHT_C.y) >= RAMP_R) hit = true;
+            }
+        }
+        
+        this.latchX = testX;
+        this.latchY = testY;
+        this.hookX = cx; 
+        this.hookY = cy; 
+    }
+
+
+    update() {
+        if (this.hookCooldown > 0) this.hookCooldown--;
+
+
+        // Supersonic Logic
+        if (this.onGround && Math.abs(this.vx) > 4) {
+            this.railTime++;
+            if (this.railTime > 90) this.isSupersonic = true; // 1.5 seconds to trigger
+        } else {
+            this.railTime = 0;
+        }
+        if (Math.abs(this.vx) < 6) {
+            this.isSupersonic = false; // Break supersonic if too slow
+        }
+
+
+        let upPressed = false;
+        let spacePressed = false;
+        let spaceReleased = false;
+        
+        let k = this.playerIndex === 1 ? keys.p1 : keys.p2;
+        let pk = this.playerIndex === 1 ? prevKeys.p1 : prevKeys.p2;
+
+
+        if (this.isAI && currentState === STATE.PLAYING && !isMultiplayer) {
+            upPressed = this.runAI();
+        } else if (currentState === STATE.PLAYING) {
+            upPressed = k.up && !pk.up;
+            spacePressed = k.grapple && !pk.grapple;
+            spaceReleased = !k.grapple && pk.grapple;
+            
+            let curAimX = 0, curAimY = 0;
+            if (k.left || k.right || k.up || k.down) {
+                if (k.left) curAimX -= 1;
+                if (k.right) curAimX += 1;
+                if (k.up) curAimY -= 1;
+                if (k.down) curAimY += 1;
+                
+                this.aimDir.x = curAimX;
+                this.aimDir.y = curAimY;
+            }
+
+
+            let accel = this.onGround ? (this.isSupersonic ? 2.5 : 1.5) : 0.6; 
+            
+            if (k.left) this.vx -= accel;
+            if (k.right) this.vx += accel;
+
+
+            if (k.down && !this.onGround) {
+                this.vy += 2.0;
+                this.isSlamming = true;
+            } else {
+                this.isSlamming = false;
+            }
+
+
+            // Grapple Start (Only if cooldown is 0)
+            if (k.grapple && !this.onGround && this.hookState === 0 && this.hookCooldown === 0) {
+                this.hookState = 1;
+                this.spinRadius = 0; 
+            }
+            // Grapple Shoot
+            if (spaceReleased && this.hookState === 1) {
+                this.hookState = 2;
+                this.shootHook();
+            }
+        }
+
+
+        // Air Jump / Rail Jump Boost
+        if (upPressed) {
+            if (this.onGround) {
+                this.vy = -12; 
+                this.vx *= 1.2; 
+            } else {
+                this.vy = -7.5; 
+            }
+            this.spawnWindStripes();
+            if (this.hookState > 0) {
+                this.hookState = 0; 
+            }
+        }
+
+
+        // Grapple Logic Processing
+        if (this.hookState === 1) {
+            this.spinAngle += 0.25;
+            if (this.spinRadius < 1) this.spinRadius += 0.1;
+            this.vy *= 0.8; 
+        } else if (this.hookState === 2) {
+            let hdx = this.latchX - this.hookX;
+            let hdy = this.latchY - this.hookY;
+            let hDist = Math.hypot(hdx, hdy);
+            
+            if (hDist < 40) {
+                this.hookX = this.latchX;
+                this.hookY = this.latchY;
+                this.hookState = 3;
+            } else {
+                this.hookX += (hdx / hDist) * 40;
+                this.hookY += (hdy / hDist) * 40;
+            }
+        } else if (this.hookState === 3) {
+            let pdx = this.latchX - (this.x + this.width/2);
+            let pdy = this.latchY - (this.y + this.height/2);
+            let pDist = Math.hypot(pdx, pdy);
+            
+            if (pDist > 30) {
+                this.vx += (pdx / pDist) * 3.5; 
+                this.vy += (pdy / pDist) * 3.5; 
+            } else {
+                this.hookState = 0; 
+                this.hookCooldown = 360; // Set 6 second cooldown when finished
+            }
+        }
+        
+        let prevVy = this.vy;
+        applyPhysics(this, false);
+
+
+        // Reset grapple and trigger cooldown if hit ground while pulling
+        if (this.onGround && this.hookState > 0) {
+            if (this.hookState === 3) this.hookCooldown = 360;
+            this.hookState = 0;
+        }
+
+
+        this.updateVFX();
+    }
+
+
+    runAI() {
+        let accel = this.onGround ? (this.isSupersonic ? 2.5 : 1.5) : 0.6;
+        const goalCenter = 800;
+        let targetX = Math.max(canvas.width / 2 + 50, Math.min(goalCenter, ball.x));
+        
+        if (this.x < targetX - 20) this.vx += accel;
+        else if (this.x > targetX + 20) this.vx -= accel;
+
+
+        // AI specific aiming
+        this.aimDir.x = Math.sign(ball.x - this.x);
+        this.aimDir.y = Math.sign(ball.y - this.y);
+
+
+        let shouldJump = false;
+        
+        // AI Logic for hooking/jumping
+        if (ball.y < this.y + 20 || this.y > GROUND_Y - 40) {
+            if (Math.random() < 0.1) shouldJump = true; 
+        }
+
+
+        if (ball.y > this.y + 80 && ball.y > 300) {
+            if (this.hookState === 0 && !this.onGround && this.hookCooldown === 0) {
+                this.hookState = 1;
+                this.spinRadius = 0;
+            } else if (this.hookState === 1 && Math.random() < 0.15) {
+                this.hookState = 2;
+                this.shootHook();
+            }
+        } else {
+            if (this.hookState === 1) this.hookState = 0;
+        }
+        
+        return shouldJump;
+    }
+
+
+    draw(ctx) {
+        // Draw tether in global space behind player with fluid S-Curve
+        if (this.hookState === 2 || this.hookState === 3) {
+            ctx.save();
+            ctx.strokeStyle = '#ffffff';
+            ctx.lineWidth = 3;
+            ctx.lineCap = 'round';
+            
+            let cx = this.x + this.width/2;
+            let cy = this.y + this.height/2;
+            let targetX = (this.hookState === 2) ? this.hookX : this.latchX;
+            let targetY = (this.hookState === 2) ? this.hookY : this.latchY;
+            
+            // Add slight sag/wiggle to make rope fluid
+            let dist = Math.hypot(targetX - cx, targetY - cy);
+            let sag = (this.hookState === 2) ? Math.sin(Date.now() * 0.05) * 20 : Math.max(0, 15 - dist/20);
+            
+            let midX = (cx + targetX) / 2 + (this.aimDir.y * sag); // Offset roughly perpendicular
+            let midY = (cy + targetY) / 2 + (-this.aimDir.x * sag);
+
+
+            ctx.beginPath();
+            ctx.moveTo(cx, cy);
+            ctx.quadraticCurveTo(midX, midY, targetX, targetY);
+            ctx.stroke();
+
+
+            // Draw anchor claw at tip
+            ctx.translate(targetX, targetY);
+            let angle = Math.atan2(targetY - cy, targetX - cx);
+            ctx.rotate(angle);
+            ctx.beginPath();
+            ctx.moveTo(-10, -8);
+            ctx.lineTo(0, 0);
+            ctx.lineTo(-10, 8);
+            ctx.stroke();
+            ctx.restore();
+        }
+
+
+        // Draw After-Images (oldest drawn first in background)
+        for (let ai of this.afterImages) {
+            ctx.save();
+            ctx.translate(ai.x + this.width/2, ai.y + this.height/2);
+            ctx.globalAlpha = ai.alpha;
+            
+            ctx.strokeStyle = this.color;
+            ctx.lineWidth = 2;
+            
+            ctx.strokeRect(-this.width/2, -this.height/2, this.width, this.height);
+
+
+            ctx.rotate(ai.rot);
+            ctx.beginPath();
+            ctx.rect(-this.width/3, -this.height/3, (this.width*2)/3, (this.height*2)/3);
+            ctx.stroke();
+
+
+            ctx.rotate(Math.PI / 4);
+            ctx.beginPath();
+            ctx.rect(-this.width/4, -this.height/4, this.width/2, this.height/2);
+            ctx.stroke();
+            
+            ctx.restore();
+        }
+
+
+        // Draw Wind Stripes
+        ctx.save();
+        ctx.strokeStyle = this.color;
+        ctx.lineWidth = 2;
+        ctx.lineCap = "round";
+        for (let ws of this.windStripes) {
+            ctx.globalAlpha = ws.alpha;
+            ctx.beginPath();
+            ctx.moveTo(this.x + this.width/2 + ws.xOffset, this.y + ws.yOffset);
+            ctx.lineTo(this.x + this.width/2 + ws.xOffset, this.y + ws.yOffset + ws.len);
+            ctx.stroke();
+        }
+        ctx.restore();
+
+
+        // Draw Main Player Body
+        ctx.save();
+        ctx.translate(this.x + this.width/2, this.y + this.height/2);
+
+
+        // Draw Cooldown Bar above head
+        if (this.hookCooldown > 0) {
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.2)';
+            ctx.fillRect(-this.width/2, -this.height/2 - 12, this.width, 4);
+            ctx.fillStyle = '#ffffff';
+            let fillWidth = this.width * (1 - (this.hookCooldown / 360));
+            ctx.fillRect(-this.width/2, -this.height/2 - 12, fillWidth, 4);
+        }
+
+
+        // Draw Lasso spinning dynamically outwards
+        if (this.hookState === 1) {
+            ctx.save();
+            // Swing out to the side based on facing/velocity
+            let sideOffset = (this.vx >= 0) ? 25 : -25;
+            let swingDist = sideOffset * this.spinRadius;
+            
+            ctx.translate(swingDist, -10);
+            
+            // Rotate the loop to look dynamic
+            ctx.rotate(this.spinAngle * 0.5);
+            ctx.scale(1, 0.4); 
+            
+            ctx.strokeStyle = '#ffffff';
+            ctx.lineWidth = 3;
+            ctx.beginPath();
+            ctx.arc(0, 0, 22 * this.spinRadius, 0, Math.PI * 2);
+            ctx.stroke();
+            ctx.restore();
+            
+            // Draw S-curved string connecting lasso loop to player core
+            ctx.save();
+            ctx.strokeStyle = '#ffffff';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(0, 0);
+            // Dynamic control point for a fluid connection
+            ctx.quadraticCurveTo(swingDist * 0.5, 10, swingDist, -10);
+            ctx.stroke();
+            ctx.restore();
+        }
+
+
+        ctx.shadowBlur = 15;
+        ctx.shadowColor = this.color;
+        ctx.strokeStyle = this.color;
+        ctx.lineWidth = 3;
+        
+        // Supersonic Core Glow
+        if (this.isSupersonic) {
+            ctx.fillStyle = `rgba(${this.playerIndex === 1 ? '255,71,87' : '30,144,255'}, 0.3)`;
+            ctx.fillRect(-this.width/2, -this.height/2, this.width, this.height);
+        }
+
+
+        ctx.strokeRect(-this.width/2, -this.height/2, this.width, this.height);
+
+
+        // Dynamic Directional Inner Spin
+        ctx.rotate(this.innerRot);
+        ctx.beginPath();
+        ctx.rect(-this.width/3, -this.height/3, (this.width*2)/3, (this.height*2)/3);
+        ctx.stroke();
+
+
+        ctx.rotate(Math.PI / 4);
+        ctx.beginPath();
+        ctx.rect(-this.width/4, -this.height/4, this.width/2, this.height/2);
+        ctx.stroke();
+        ctx.restore();
+
+
+        // Eye marker to show player direction
+        ctx.fillStyle = '#ffffff';
+        let dirOffset = this.isAI ? -8 : 8;
+        ctx.fillRect(this.x + 10 + dirOffset, this.y + 10, 20, 8);
+    }
+}
+
+
+class Ball {
+    constructor() {
+        this.radius = 18;
+        this.reset();
+    }
+    reset() {
+        this.x = canvas.width / 2;
+        this.y = 100;
+        this.vx = 0; this.vy = 0;
+        this.rotation = 0;
+        
+        this.currentColor = '#ffffff';
+        this.targetColor = '#ffffff';
+        this.prevColor = '#ffffff';
+        this.colorTransition = 1.0;
+        this.impactX = 0;
+        this.impactY = 0;
+    }
+    hit(color, impactGlobalX, impactGlobalY) {
+        if (this.targetColor !== color) {
+            this.prevColor = this.colorTransition < 1.0 ? this.targetColor : this.currentColor;
+            this.targetColor = color;
+            this.colorTransition = 0.0;
+            this.impactX = impactGlobalX - this.x;
+            this.impactY = impactGlobalY - this.y;
+        }
+    }
+    update() {
+        this.rotation += this.vx * 0.05;
+        if (this.colorTransition < 1.0) {
+            this.colorTransition += 0.015; // Slow transition
+            if (this.colorTransition >= 1.0) {
+                this.currentColor = this.targetColor;
+                this.colorTransition = 1.0;
+            }
+        }
+        applyPhysics(this, true);
+    }
+    draw(ctx) {
+        ctx.save();
+        ctx.translate(this.x, this.y);
+        
+        ctx.shadowBlur = 15;
+        ctx.shadowColor = this.colorTransition >= 1.0 ? this.currentColor : this.targetColor;
+        
+        let currentStyle = this.currentColor;
+        
+        if (this.colorTransition < 1.0) {
+            let grad = ctx.createRadialGradient(this.impactX, this.impactY, 0, 0, 0, this.radius * 2);
+            grad.addColorStop(0, this.targetColor);
+            grad.addColorStop(Math.min(1.0, this.colorTransition), this.targetColor);
+            grad.addColorStop(Math.min(1.0, this.colorTransition + 0.1), this.prevColor);
+            grad.addColorStop(1, this.prevColor);
+            currentStyle = grad;
+        }
+
+
+        ctx.strokeStyle = currentStyle;
+        ctx.lineWidth = 2;
+        
+        ctx.beginPath();
+        ctx.ellipse(0, 0, this.radius, this.radius * Math.max(0.1, Math.abs(Math.sin(this.rotation))), 0, 0, Math.PI * 2);
+        ctx.stroke();
+
+
+        ctx.beginPath();
+        ctx.ellipse(0, 0, this.radius * Math.max(0.1, Math.abs(Math.cos(this.rotation * 0.8))), this.radius, 0, 0, Math.PI * 2);
+        ctx.stroke();
+
+
+        ctx.rotate(-this.rotation * 1.5);
+        ctx.beginPath();
+        let triRadius = this.radius * 0.6;
+        for (let i = 0; i < 3; i++) {
+            let angle = (i * 2 * Math.PI) / 3;
+            let px = Math.cos(angle) * triRadius;
+            let py = Math.sin(angle) * triRadius;
+            if (i === 0) ctx.moveTo(px, py);
+            else ctx.lineTo(px, py);
+        }
+        ctx.closePath();
+        ctx.stroke();
+        
+        ctx.restore();
+    }
+}
+
+
+class WallNet {
+    constructor(isRightSide) {
+        this.isRightSide = isRightSide;
+        this.w = 40;
+        this.h = LEFT_C.y; 
+        this.x = isRightSide ? canvas.width - this.w : 0;
+        this.y = 0;
+    }
+
+
+    draw(ctx) {
+        ctx.save();
+        ctx.strokeStyle = '#55efc4'; // Hardcoded green
+        ctx.lineWidth = 2;
+        ctx.shadowBlur = 12;
+        ctx.shadowColor = '#55efc4';
+        
+        // Triangular lattice theme
+        ctx.beginPath();
+        for (let y = 0; y < this.h; y += 25) {
+            ctx.moveTo(this.x, y);
+            ctx.lineTo(this.x + this.w, y + 25);
+            ctx.moveTo(this.x + this.w, y);
+            ctx.lineTo(this.x, y + 25);
+            ctx.moveTo(this.x, y + 12.5);
+            ctx.lineTo(this.x + this.w, y + 12.5);
+        }
+        ctx.stroke();
+        
+        // Border constraints
+        ctx.lineWidth = 4;
+        ctx.strokeRect(this.x, this.y, this.w, this.h);
+        ctx.restore();
+    }
+    
+    checkGoal(b) {
+        let inLeft = !this.isRightSide && b.x - b.radius < this.w;
+        let inRight = this.isRightSide && b.x + b.radius > this.x;
+        
+        if (b.y < this.h && (inLeft || inRight)) {
+            b.vx *= 0.6; 
+            if ((!this.isRightSide && b.x < this.w - 15) || (this.isRightSide && b.x > this.x + 15)) {
+                return true;
+            }
+        }
+        return false;
+    }
+}
+
+
+let player = new Player(300, '#ff4757', false);
+let ai = new Player(canvas.width - 340, '#1e90ff', true);
+let ball = new Ball();
+let rightGoal = new WallNet(true);
+let leftGoal = new WallNet(false);
+
+
+function checkPlayerBallCollision(p, b) {
+    let testX = Math.max(p.x, Math.min(b.x, p.x + p.width));
+    let testY = Math.max(p.y, Math.min(b.y, p.y + p.height));
+
+
+    let distX = b.x - testX;
+    let distY = b.y - testY;
+    let distance = Math.sqrt((distX*distX) + (distY*distY));
+
+
+    if (distance <= b.radius) {
+        if (distance === 0) { distX = 1; distY = 0; distance = 1; }
+        let angle = Math.atan2(distY, distX);
+        
+        // Trigger color shift on the ball starting from impact point
+        let impactGlobalX = b.x - Math.cos(angle) * b.radius;
+        let impactGlobalY = b.y - Math.sin(angle) * b.radius;
+        b.hit(p.color, impactGlobalX, impactGlobalY);
+
+
+        b.x = testX + Math.cos(angle) * b.radius;
+        b.y = testY + Math.sin(angle) * b.radius;
+        
+        b.vx = (b.vx * 0.5) + (p.vx * 0.8);
+        b.vy = (b.vy * 0.5) + (p.vy * 0.8);
+        
+        b.vx += Math.cos(angle) * 5;
+        b.vy += Math.sin(angle) * 5;
+
+
+        // If hitting ball while grapple slamming down
+        if (p.hookState === 3) {
+            b.vy += 12;
+        }
+    }
+}
+
+
+function handleStateTransitions(code) {
+    if ((currentState === STATE.MENU || currentState === STATE.GAMEOVER) && (code === 'KeyW' || code === 'ArrowUp')) startGame();
+    else if (currentState === STATE.REPLAY && code === 'KeyX') endReplay();
+}
+
+
+function startGame() {
+    scores = { player: 0, ai: 0 };
+    updateScoreUI(); resetPositions();
+    currentState = STATE.PLAYING;
+    menuUI.classList.add('hidden'); gameOverUI.classList.add('hidden'); playingUI.classList.remove('hidden');
+    
+    // Switch AI Flag
+    ai.isAI = !isMultiplayer;
+    
+    historyBuffer = [];
+}
+
+
+function resetPositions() {
+    player.reset(); ai.reset(); ball.reset();
+}
+
+
+function updateScoreUI() {
+    playerScoreEl.innerText = scores.player; aiScoreEl.innerText = scores.ai;
+}
+
+
+function recordFrame() {
+    historyBuffer.push({
+        p: {x: player.x, y: player.y, hook: player.hookState, hX: player.latchX, hY: player.hookY, sA: player.spinAngle},
+        a: {x: ai.x, y: ai.y, hook: ai.hookState, hX: ai.latchX, hY: ai.hookY, sA: ai.spinAngle},
+        b: {x: ball.x, y: ball.y, rot: ball.rotation, tCol: ball.targetColor, pCol: ball.prevColor, trans: ball.colorTransition, ix: ball.impactX, iy: ball.impactY}
+    });
+    if (historyBuffer.length > HISTORY_LENGTH) historyBuffer.shift();
+}
+
+
+function triggerGoal(scorer, targetGoal) {
+    currentState = STATE.SCORED; goalTimer = 60;
+    if (scorer === 'player') scores.player++; else scores.ai++;
+    updateScoreUI();
+}
+
+
+function startReplay() {
+    currentState = STATE.REPLAY; replayIndex = 0;
+    replayTag.classList.remove('hidden'); skipTag.classList.remove('hidden');
+    player.afterImages = []; player.windStripes = [];
+    ai.afterImages = []; ai.windStripes = [];
+}
+
+
+function endReplay() {
+    replayTag.classList.add('hidden'); skipTag.classList.add('hidden');
+    if (scores.player >= 5 || scores.ai >= 5) {
+        currentState = STATE.GAMEOVER; playingUI.classList.add('hidden'); gameOverUI.classList.remove('hidden');
+        winnerText.innerText = scores.player >= 5 ? "YOU WIN!" : "AI WINS!";
+        winnerText.style.color = scores.player >= 5 ? "#ff4757" : "#1e90ff";
+    } else {
+        resetPositions(); currentState = STATE.PLAYING;
+    }
+}
+
+
+function drawBackground() {
+    ctx.fillStyle = '#000000';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+
+    ctx.fillStyle = '#0a0a0a';
+    ctx.beginPath();
+    ctx.moveTo(0, LEFT_C.y);
+    ctx.arc(LEFT_C.x, LEFT_C.y, RAMP_R, Math.PI, Math.PI*0.5, true); 
+    ctx.lineTo(RIGHT_C.x, GROUND_Y);
+    ctx.arc(RIGHT_C.x, RIGHT_C.y, RAMP_R, Math.PI*0.5, 0, true);
+    ctx.lineTo(canvas.width, RIGHT_C.y);
+    ctx.lineTo(canvas.width, canvas.height);
+    ctx.lineTo(0, canvas.height);
+    ctx.fill();
+
+
+    ctx.lineWidth = 5;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    
+    for (let i = 0; i < floorPath.length - 1; i++) {
+        let p1 = floorPath[i];
+        let p2 = floorPath[i+1];
+        
+        ctx.strokeStyle = '#ffffff';
+        ctx.shadowColor = '#ffffff';
+        ctx.shadowBlur = 8;
+        
+        ctx.beginPath();
+        ctx.moveTo(p1.x, p1.y);
+        ctx.lineTo(p2.x, p2.y);
+        ctx.stroke();
+    }
+    ctx.shadowBlur = 0;
+}
+
+
+function loop() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    
+    drawBackground();
+    rightGoal.draw(ctx); leftGoal.draw(ctx);
+
+
+    if (currentState === STATE.MENU || currentState === STATE.GAMEOVER) {
+        player.draw(ctx); ai.draw(ctx); ball.draw(ctx);
+    } else if (currentState === STATE.PLAYING) {
+        player.update(); ai.update(); ball.update();
+        checkPlayerBallCollision(player, ball); checkPlayerBallCollision(ai, ball);
+        
+        if (rightGoal.checkGoal(ball)) triggerGoal('player', rightGoal);
+        if (leftGoal.checkGoal(ball)) triggerGoal('ai', leftGoal);
+        
+        recordFrame();
+        player.draw(ctx); ai.draw(ctx); ball.draw(ctx);
+    } else if (currentState === STATE.SCORED) {
+        ball.vx *= 0.9; ball.vy *= 0.9; ball.update(); 
+        player.updateVFX(); ai.updateVFX();
+        player.draw(ctx); ai.draw(ctx); ball.draw(ctx);
+        
+        ctx.fillStyle = '#fdcb6e'; ctx.font = 'bold 80px Fredoka'; ctx.textAlign = 'center';
+        ctx.fillText('GOAL!', canvas.width/2, canvas.height/2);
+        
+        goalTimer--; if(goalTimer <= 0) startReplay();
+    } else if (currentState === STATE.REPLAY) {
+        if (historyBuffer[replayIndex]) {
+            let f = historyBuffer[replayIndex];
+            
+            // Replay values
+            player.vx = f.p.x - player.x; player.vy = f.p.y - player.y;
+            ai.vx = f.a.x - ai.x; ai.vy = f.a.y - ai.y;
+
+
+            player.x = f.p.x; player.y = f.p.y; 
+            player.hookState = f.p.hook; player.latchX = f.p.hX; player.hookY = f.p.hY; player.spinAngle = f.p.sA;
+            
+            ai.x = f.a.x; ai.y = f.a.y; 
+            ai.hookState = f.a.hook; ai.latchX = f.a.hX; ai.hookY = f.a.hY; ai.spinAngle = f.a.sA;
+            
+            ball.x = f.b.x; ball.y = f.b.y; ball.rotation = f.b.rot;
+            ball.targetColor = f.b.tCol; ball.prevColor = f.b.pCol; ball.colorTransition = f.b.trans;
+            ball.impactX = f.b.ix; ball.impactY = f.b.iy;
+            
+            player.updateVFX(); ai.updateVFX();
+
+
+            player.draw(ctx); ai.draw(ctx); ball.draw(ctx);
+            ctx.fillStyle = 'rgba(0,0,0,0.2)'; ctx.fillRect(0,0,canvas.width,canvas.height);
+            replayIndex++;
+        } else endReplay();
+    }
+
+
+    // Top of frame flag tracking reset
+    prevKeys.p1.up = keys.p1.up;
+    prevKeys.p1.grapple = keys.p1.grapple;
+    prevKeys.p2.up = keys.p2.up;
+    prevKeys.p2.grapple = keys.p2.grapple;
+
+
+    requestAnimationFrame(loop);
+}
+
+
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
