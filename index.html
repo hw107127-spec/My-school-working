@@ -124,6 +124,7 @@ let width, height;
 let frameCount = 0;
 let shakeAmount = 0;
 let gameState = 'PLAYING';
+let targetPopulation = 6; // Dynamic population target
 
 // Upgrades Library
 const ALL_CARDS = [
@@ -191,6 +192,8 @@ function playNoise(duration, vol) {
 
 let initialized = false;
 function resize() {
+    let oldWidth = width;
+    let oldHeight = height;
     width = window.innerWidth; height = window.innerHeight;
     canvas.width = width; canvas.height = height;
     
@@ -199,7 +202,36 @@ function resize() {
         stars.push({ x: Math.random() * width, y: Math.random() * height, size: Math.random() * 2, speed: 0.1 + Math.random() * 0.5 });
     }
 
-    if(!initialized && width > 0) { resetArena(); initialized = true; }
+    if(!initialized && width > 0) { 
+        resetArena(); 
+        initialized = true; 
+    } else if (initialized && oldWidth > 0 && oldHeight > 0) {
+        // Dynamically spread the arena elements when the window size changes!
+        let scaleX = width / oldWidth;
+        let scaleY = height / oldHeight;
+        let towerWidth = width * 0.15;
+        let towerHeight = height * 0.6;
+        let towerY = height - towerHeight;
+
+        player.x *= scaleX;
+        player.y *= scaleY;
+        
+        for (let b of blocks) {
+            if (b.state === 'STATIC') {
+                if (b.x < oldWidth / 2) { // Resize Left Tower
+                    b.w = towerWidth; b.h = towerHeight; b.y = towerY;
+                } else { // Resize Right Tower
+                    b.w = towerWidth; b.h = towerHeight; b.x = width - towerWidth; b.y = towerY;
+                }
+            } else if (b.state === 'ORGANIC') {
+                // Instantly spread out the organic block anchors
+                b.anchorX *= scaleX;
+                b.anchorY *= scaleY;
+                b.x *= scaleX;
+                b.y *= scaleY;
+            }
+        }
+    }
 }
 window.addEventListener('resize', resize);
 
@@ -285,8 +317,12 @@ function resetArena() {
     player.vx = 0; player.vy = 0; player.hp = player.maxHp; 
     player.effects = []; player.shieldActive = 0; player.shieldCooldown = 0; player.outOfBoundsCooldown = 0; player.jumpsLeft = 2;
 
+    // Calculate initial population based on screen size (Area)
+    let basePop = Math.floor((width * height) / 120000) + 4;
+    targetPopulation = Math.min(Math.max(basePop, 6), 25);
+
     // Generate Organic Alive Formation Blocks (Initial Spawn)
-    for(let i=0; i<12; i++) spawnOrganicBlock(true);
+    for(let i=0; i<targetPopulation; i++) spawnOrganicBlock(true);
     
     updateScoreUI();
     gameState = 'PLAYING';
@@ -519,20 +555,35 @@ function update() {
         if (s.y > height) { s.y = 0; s.x = Math.random() * width; }
     }
 
-    if (gameState === 'PLAYING') updateActors();
+    if (gameState === 'PLAYING') {
+        // Change population periodically (every ~8 seconds) based on screen area
+        if (frameCount % 480 === 0) {
+            let basePop = Math.floor((width * height) / 120000) + 4; 
+            basePop = Math.min(Math.max(basePop, 6), 25); // Cap between 6 and 25
+            targetPopulation = basePop + Math.floor(Math.random() * 5) - 2; 
+        }
+        updateActors();
+    }
 
     // ORGANIC ALIVE ARENA LOGIC
-    let organicCount = 0;
+    let activeOrganicCount = 0;
+    
     for (let i = blocks.length - 1; i >= 0; i--) {
         let b = blocks[i];
         
         if (b.scale < b.targetScale) b.scale += 0.05;
 
         if (gameState === 'PLAYING' && b.state === 'ORGANIC') {
-            organicCount++;
+            if (!b.leaving) activeOrganicCount++;
             
             // Lifespan & Leaving mechanism
             b.lifespan--;
+            
+            // Cull blocks dynamically if we exceed the target population
+            if (activeOrganicCount > targetPopulation && !b.leaving && Math.random() < 0.01) {
+                b.lifespan = 0; // Force to leave
+            }
+
             if (b.lifespan <= 0 && !b.leaving) {
                 b.leaving = true;
                 // Pick a direction far off-screen to drift away
@@ -591,8 +642,8 @@ function update() {
         }
     }
 
-    // Continuously spawn new blocks drifting in if we dip below max population
-    if (gameState === 'PLAYING' && organicCount < 14 && frameCount % 60 === 0) {
+    // Continuously spawn new blocks drifting in if we dip below target population
+    if (gameState === 'PLAYING' && activeOrganicCount < targetPopulation && frameCount % 60 === 0) {
         spawnOrganicBlock(false);
     }
 
